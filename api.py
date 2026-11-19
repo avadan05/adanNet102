@@ -1,127 +1,149 @@
-from flask import Flask, render_template, request
-from netmiko import ConnectHandler
 
+from flask import Flask, render_template, request, jsonify
+from netmiko import ConnectHandler
 
 app = Flask(__name__)
 
 
-@app.route("/", methods=["GET", "POST"])
-def index():
+
+ROUTER_HOST = "192.168.10.234"
+ROUTER_PORT = 32770
+
+ROUTER_USERNAME = "YOUR_USERNAME"
+ROUTER_PASSWORD = "YOUR_PASSWORD"
+ROUTER_SECRET = ""
+
+# Automation state
+automation_running = False
+
+
+ 
+
+def run_router_commands():
+
+    router = {
+        "device_type": "cisco_ios_telnet",
+        "host": ROUTER_HOST,
+        "port": ROUTER_PORT,
+        "username": ROUTER_USERNAME,
+        "password": ROUTER_PASSWORD,
+        "secret": ROUTER_SECRET,
+        "timeout": 15,
+        "conn_timeout": 15,
+    }
+
     results = {}
-    error = None
 
+    connection = ConnectHandler(**router)
 
-    if request.method == "POST":
-        router_device = {
-            'device_type': 'cisco_ios_telnet',
-            'ip': "192.168.10.101",
-            'port': 32770,
-            'username': 'admin',
-            'password': 'eve123',
-            'secret': 'eve123',
-        }
+    try:
+        # Enter privileged mode if necessary
+        if not connection.check_enable_mode():
+            connection.enable()
 
-
-        commands_to_run = [
+        commands = [
             "show version",
             "show ip interface brief",
             "show running-config"
         ]
 
+        for command in commands:
 
-        try:
-            net_connect = ConnectHandler(**router_device)
-            net_connect.enable()
+            output = connection.send_command(
+                command,
+                read_timeout=30
+            )
 
+            results[command] = output
 
-            for cmd in commands_to_run:
-                output = net_connect.send_command(cmd)
-                results[cmd] = output
+    finally:
+        connection.disconnect()
 
-
-            net_connect.disconnect()
-
-
-        except Exception as e:
-            error = f"Connection failed: {e}"
+    return results
 
 
-        return render_template("index.html", results=results, error=error)
-
-
-if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
-
-
-from flask import Flask, render_template, request
-from netmiko import ConnectHandler
-from netmiko.exceptions import NetmikoTimeoutException, NetmikoAuthenticationException
-
-
-app = Flask(__name__)
-
-
-ROUTER = {
-    "device_type": "cisco_ios_telnet",
-    "host": "192.168.10.111",   # netmiko uses 'host', not 'ip'
-    "port": 32770,
-    "username": "admin",
-    "password": "eve123",
-    "secret": "eve123",
-    "timeout": 15,
-    "session_timeout": 30,
-    "global_delay_factor": 2,
-}
-
-
-COMMANDS = [
-    "show version",
-    "show ip interface brief",
-    "show running-config",
-]
-
-
-
+# ==================================
+# MAIN DASHBOARD
+# ==================================
 
 @app.route("/", methods=["GET", "POST"])
-def index():
-    results = {}
-    error = None
+def home():
 
+    error = None
+    results = {}
 
     if request.method == "POST":
-        net_connect = None
+
         try:
-            net_connect = ConnectHandler(**ROUTER)
-            net_connect.enable()
+            results = run_router_commands()
 
-
-            for cmd in COMMANDS:
-                # 'show running-config' is long — relax timeouts + verification
-                output = net_connect.send_command(
-                    cmd,
-                    read_timeout=60,
-                    cmd_verify=False,
-                )
-                results[cmd] = output
-
-
-        except NetmikoAuthenticationException as e:
-            error = f"Authentication failed: {e}"
-        except NetmikoTimeoutException as e:
-            error = f"Timed out connecting to {ROUTER['host']}:{ROUTER['port']} — {e}"
         except Exception as e:
-            error = f"Unexpected error: {type(e).__name__}: {e}"
-        finally:
-            if net_connect is not None:
-                net_connect.disconnect()
+            error = str(e)
+
+    return render_template(
+        "index.html",
+        error=error,
+        results=results
+    )
 
 
-    # ALWAYS return a response — both GET and POST
-    return render_template("index.html", results=results, error=error)
+# ==================================
+# AUTOMATION STATUS
+# ==================================
+
+@app.route("/api/status")
+def status():
+
+    return jsonify({
+        "running": automation_running,
+        "message": "Backend connected"
+    })
 
 
+# ==================================
+# START AUTOMATION
+# ==================================
 
+@app.route("/api/automation/start", methods=["POST"])
+def start_automation():
+
+    global automation_running
+
+    automation_running = True
+
+    return jsonify({
+        "success": True,
+        "running": True,
+        "message": "Automation started."
+    })
+
+
+# ==================================
+# STOP AUTOMATION
+# ==================================
+
+@app.route("/api/automation/stop", methods=["POST"])
+def stop_automation():
+
+    global automation_running
+
+    automation_running = False
+
+    return jsonify({
+        "success": True,
+        "running": False,
+        "message": "Automation stopped."
+    })
+
+
+# ==================================
+# RUN FLASK APPLICATION
+# ==================================
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+
+    app.run(
+        host="127.0.0.1",
+        port=5000,
+        debug=True
+    )
